@@ -22,22 +22,13 @@ function deny(status: number, message: string) {
   });
 }
 
-function databaseUnavailable(action: string, error: DatabaseError) {
-  console.error(`[lookup] Database failed while trying to ${action}`, {
+function logDatabaseIssue(action: string, error: DatabaseError) {
+  console.warn(`[lookup] Database failed while trying to ${action}; continuing lookup`, {
     code: error.code,
     message: error.message,
     details: error.details,
     hint: error.hint,
   });
-
-  return new Response(
-    JSON.stringify({
-      success: false,
-      code: "DATABASE_UNAVAILABLE",
-      error: "Backend database is not connected correctly on this host. Please contact admin.",
-    }),
-    { status: 503, headers: SECURE_HEADERS },
-  );
 }
 
 export const Route = createFileRoute("/api/lookup")({
@@ -75,9 +66,9 @@ export const Route = createFileRoute("/api/lookup")({
           .eq("ip", ip)
           .maybeSingle();
 
-        if (blockError) return databaseUnavailable("check blocked IPs", blockError);
+        if (blockError) logDatabaseIssue("check blocked IPs", blockError);
 
-        if (blocked) {
+        if (!blockError && blocked) {
           return new Response(
             JSON.stringify({
               success: false,
@@ -96,9 +87,9 @@ export const Route = createFileRoute("/api/lookup")({
           .eq("ip", ip)
           .gte("created_at", since);
 
-        if (rateLimitError) return databaseUnavailable("check rate limits", rateLimitError);
+        if (rateLimitError) logDatabaseIssue("check rate limits", rateLimitError);
 
-        if ((recentCount ?? 0) >= 10) {
+        if (!rateLimitError && (recentCount ?? 0) >= 10) {
           return new Response(
             JSON.stringify({ success: false, error: "Rate limit exceeded. Slow down." }),
             { status: 429, headers: SECURE_HEADERS },
@@ -153,9 +144,7 @@ export const Route = createFileRoute("/api/lookup")({
           user_agent: userAgent,
         });
 
-        if (logError) {
-          return databaseUnavailable("save the search log", logError);
-        }
+        if (logError) logDatabaseIssue("save the search log", logError);
 
         // Fire-and-forget Discord webhook
         const webhook = process.env.DISCORD_WEBHOOK_URL;
