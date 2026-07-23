@@ -8,11 +8,36 @@ const SECURE_HEADERS = {
   "referrer-policy": "no-referrer",
 };
 
+type DatabaseError = {
+  message?: string;
+  code?: string;
+  details?: string;
+  hint?: string;
+};
+
 function deny(status: number, message: string) {
   return new Response(JSON.stringify({ success: false, error: message }), {
     status,
     headers: SECURE_HEADERS,
   });
+}
+
+function databaseUnavailable(action: string, error: DatabaseError) {
+  console.error(`[lookup] Database failed while trying to ${action}`, {
+    code: error.code,
+    message: error.message,
+    details: error.details,
+    hint: error.hint,
+  });
+
+  return new Response(
+    JSON.stringify({
+      success: false,
+      code: "DATABASE_UNAVAILABLE",
+      error: "Backend database is not connected correctly on this host. Please contact admin.",
+    }),
+    { status: 503, headers: SECURE_HEADERS },
+  );
 }
 
 export const Route = createFileRoute("/api/lookup")({
@@ -44,11 +69,14 @@ export const Route = createFileRoute("/api/lookup")({
         const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
 
         // Block check
-        const { data: blocked } = await supabaseAdmin
+        const { data: blocked, error: blockError } = await supabaseAdmin
           .from("blocked_ips")
           .select("ip, reason")
           .eq("ip", ip)
           .maybeSingle();
+
+        if (blockError) return databaseUnavailable("check blocked IPs", blockError);
+
         if (blocked) {
           return new Response(
             JSON.stringify({
@@ -62,11 +90,14 @@ export const Route = createFileRoute("/api/lookup")({
 
         // Layer 3: rate limit — max 10 requests / minute per IP
         const since = new Date(Date.now() - 60_000).toISOString();
-        const { count: recentCount } = await supabaseAdmin
+        const { count: recentCount, error: rateLimitError } = await supabaseAdmin
           .from("search_logs")
           .select("*", { count: "exact", head: true })
           .eq("ip", ip)
           .gte("created_at", since);
+
+        if (rateLimitError) return databaseUnavailable("check rate limits", rateLimitError);
+
         if ((recentCount ?? 0) >= 10) {
           return new Response(
             JSON.stringify({ success: false, error: "Rate limit exceeded. Slow down." }),
@@ -123,11 +154,7 @@ export const Route = createFileRoute("/api/lookup")({
         });
 
         if (logError) {
-          console.error("[lookup] Failed to save search log", logError.message);
-          return new Response(
-            JSON.stringify({ success: false, error: "Service temporarily unavailable. Please contact admin." }),
-            { status: 503, headers: SECURE_HEADERS },
-          );
+          return databaseUnavailable("save the search log", logError);
         }
 
         // Fire-and-forget Discord webhook
