@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 
-// Public health check for both the upstream OSINT API and backend database.
+// Public health check for the upstream lookup API, with backend database status included separately.
 let cache: { at: number; payload: HealthPayload } | null = null;
 const CACHE_MS = 15_000;
 
@@ -84,17 +84,12 @@ export const Route = createFileRoute("/api/public/health")({
         }
 
         const [upstream, database] = await Promise.all([checkUpstream(), checkDatabase()]);
-        const ok = upstream.ok && database.ok;
+        const ok = upstream.ok;
         const latencyMs = Math.max(upstream.latencyMs ?? 0, database.latencyMs ?? 0) || null;
-        const status = !ok ? "down" : latencyMs && latencyMs > 3000 ? "degraded" : "operational";
+        const status = !upstream.ok ? "down" : !database.ok || (latencyMs && latencyMs > 3000) ? "degraded" : "operational";
         const error = ok
-          ? undefined
-          : [
-              upstream.ok ? null : upstream.error ?? "Upstream unavailable",
-              database.ok ? null : database.error ?? "Database unavailable",
-            ]
-              .filter(Boolean)
-              .join(" · ");
+          ? database.ok ? undefined : database.error ?? "Database unavailable"
+          : upstream.error ?? "Upstream unavailable";
         const payload: HealthPayload = {
           ok,
           status,
